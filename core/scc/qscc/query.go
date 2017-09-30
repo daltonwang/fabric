@@ -20,11 +20,14 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/common/flogging"
 
+	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/peer"
+	"github.com/hyperledger/fabric/core/policy"
+	"github.com/hyperledger/fabric/msp/mgmt"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/hyperledger/fabric/protos/utils"
 )
@@ -35,9 +38,10 @@ import (
 // - GetBlockByHash returns a block
 // - GetTransactionByID returns a transaction
 type LedgerQuerier struct {
+	policyChecker policy.PolicyChecker
 }
 
-var qscclogger = logging.MustGetLogger("qscc")
+var qscclogger = flogging.MustGetLogger("qscc")
 
 // These are function names from Invoke first parameter
 const (
@@ -53,6 +57,13 @@ const (
 // to any transaction execution on the chain.
 func (e *LedgerQuerier) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	qscclogger.Info("Init QSCC")
+
+	// Init policy checker for access control
+	e.policyChecker = policy.NewPolicyChecker(
+		peer.NewChannelPolicyManagerGetter(),
+		mgmt.GetLocalMSP(),
+		mgmt.NewLocalMSPPrincipalGetter(),
+	)
 
 	return shim.Success(nil)
 }
@@ -81,11 +92,20 @@ func (e *LedgerQuerier) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 	if targetLedger == nil {
 		return shim.Error(fmt.Sprintf("Invalid chain ID, %s", cid))
 	}
-	if qscclogger.IsEnabledFor(logging.DEBUG) {
-		qscclogger.Debugf("Invoke function: %s on chain: %s", fname, cid)
+
+	qscclogger.Debugf("Invoke function: %s on chain: %s", fname, cid)
+
+	// Handle ACL:
+	// 1. get the signed proposal
+	sp, err := stub.GetSignedProposal()
+	if err != nil {
+		return shim.Error(fmt.Sprintf("Failed getting signed proposal from stub, %s: %s", cid, err))
 	}
 
-	// TODO: Handle ACL
+	// 2. check the channel reader policy
+	if err = e.policyChecker.CheckPolicy(cid, policies.ChannelApplicationReaders, sp); err != nil {
+		return shim.Error(fmt.Sprintf("Authorization request failed %s: %s", cid, err))
+	}
 
 	switch fname {
 	case GetTransactionByID:

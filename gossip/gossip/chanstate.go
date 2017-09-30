@@ -1,22 +1,13 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package gossip
 
 import (
+	"bytes"
 	"sync"
 	"sync/atomic"
 
@@ -51,12 +42,54 @@ func (cs *channelState) isStopping() bool {
 	return atomic.LoadInt32(&cs.stopping) == int32(1)
 }
 
+func (cs *channelState) lookupChannelForMsg(msg proto.ReceivedMessage) channel.GossipChannel {
+	if msg.GetGossipMessage().IsStateInfoPullRequestMsg() {
+		sipr := msg.GetGossipMessage().GetStateInfoPullReq()
+		mac := sipr.Channel_MAC
+		pkiID := msg.GetConnectionInfo().ID
+		return cs.getGossipChannelByMAC(mac, pkiID)
+	}
+	return cs.lookupChannelForGossipMsg(msg.GetGossipMessage().GossipMessage)
+}
+
+func (cs *channelState) lookupChannelForGossipMsg(msg *proto.GossipMessage) channel.GossipChannel {
+	if !msg.IsStateInfoMsg() {
+		// If we reached here then the message isn't:
+		// 1) StateInfoPullRequest
+		// 2) StateInfo
+		// Hence, it was already sent to a peer (us) that has proved it knows the channel name, by
+		// sending StateInfo messages in the past.
+		// Therefore- we use the channel name from the message itself.
+		return cs.getGossipChannelByChainID(msg.Channel)
+	}
+
+	// Else, it's a StateInfo message.
+	stateInfMsg := msg.GetStateInfo()
+	return cs.getGossipChannelByMAC(stateInfMsg.Channel_MAC, stateInfMsg.PkiId)
+}
+
+func (cs *channelState) getGossipChannelByMAC(receivedMAC []byte, pkiID common.PKIidType) channel.GossipChannel {
+	// Iterate over the channels, and try to find a channel that the computation
+	// of the MAC is equal to the MAC on the message.
+	// If it is, then the peer that signed the message knows the name of the channel
+	// because its PKI-ID was checked when the message was verified.
+	cs.RLock()
+	defer cs.RUnlock()
+	for chanName, gc := range cs.channels {
+		mac := channel.GenerateMAC(pkiID, common.ChainID(chanName))
+		if bytes.Equal(mac, receivedMAC) {
+			return gc
+		}
+	}
+	return nil
+}
+
 func (cs *channelState) getGossipChannelByChainID(chainID common.ChainID) channel.GossipChannel {
 	if cs.isStopping() {
 		return nil
 	}
-	cs.Lock()
-	defer cs.Unlock()
+	cs.RLock()
+	defer cs.RUnlock()
 	return cs.channels[string(chainID)]
 }
 
@@ -67,7 +100,10 @@ func (cs *channelState) joinChannel(joinMsg api.JoinChannelMessage, chainID comm
 	cs.Lock()
 	defer cs.Unlock()
 	if gc, exists := cs.channels[string(chainID)]; !exists {
-		cs.channels[string(chainID)] = channel.NewGossipChannel(cs.g.mcs, chainID, &gossipAdapterImpl{gossipServiceImpl: cs.g, Discovery: cs.g.disc}, joinMsg)
+		pkiID := cs.g.comm.GetPKIid()
+		ga := &gossipAdapterImpl{gossipServiceImpl: cs.g, Discovery: cs.g.disc}
+		gc := channel.NewGossipChannel(pkiID, cs.g.selfOrg, cs.g.mcs, chainID, ga, joinMsg)
+		cs.channels[string(chainID)] = gc
 	} else {
 		gc.ConfigureChannel(joinMsg)
 	}
@@ -80,12 +116,14 @@ type gossipAdapterImpl struct {
 
 func (ga *gossipAdapterImpl) GetConf() channel.Config {
 	return channel.Config{
-		ID:                       ga.conf.ID,
-		MaxBlockCountToStore:     ga.conf.MaxBlockCountToStore,
-		PublishStateInfoInterval: ga.conf.PublishStateInfoInterval,
-		PullInterval:             ga.conf.PullInterval,
-		PullPeerNum:              ga.conf.PullPeerNum,
-		RequestStateInfoInterval: ga.conf.RequestStateInfoInterval,
+		ID:                          ga.conf.ID,
+		MaxBlockCountToStore:        ga.conf.MaxBlockCountToStore,
+		PublishStateInfoInterval:    ga.conf.PublishStateInfoInterval,
+		PullInterval:                ga.conf.PullInterval,
+		PullPeerNum:                 ga.conf.PullPeerNum,
+		RequestStateInfoInterval:    ga.conf.RequestStateInfoInterval,
+		BlockExpirationInterval:     ga.conf.PullInterval * 100,
+		StateInfoCacheSweepInterval: ga.conf.PullInterval * 5,
 	}
 }
 

@@ -20,18 +20,28 @@ import (
 	"bytes"
 	"errors"
 	"testing"
-
-	"github.com/hyperledger/fabric/msp"
+	"time"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/msp"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mb "github.com/hyperledger/fabric/protos/msp"
+	logging "github.com/op/go-logging"
+	"github.com/stretchr/testify/assert"
 )
+
+func init() {
+	logging.SetLevel(logging.DEBUG, "")
+}
 
 var invalidSignature = []byte("badsigned")
 
 type mockIdentity struct {
 	idBytes []byte
+}
+
+func (id *mockIdentity) ExpiresAt() time.Time {
+	return time.Time{}
 }
 
 func (id *mockIdentity) SatisfiesPrincipal(p *mb.MSPPrincipal) error {
@@ -54,8 +64,8 @@ func (id *mockIdentity) Validate() error {
 	return nil
 }
 
-func (id *mockIdentity) GetOrganizationalUnits() []string {
-	return []string{"dunno"}
+func (id *mockIdentity) GetOrganizationalUnits() []*msp.OUIdentifier {
+	return nil
 }
 
 func (id *mockIdentity) Verify(msg []byte, sig []byte) error {
@@ -64,14 +74,6 @@ func (id *mockIdentity) Verify(msg []byte, sig []byte) error {
 	} else {
 		return nil
 	}
-}
-
-func (id *mockIdentity) VerifyOpts(msg []byte, sig []byte, opts msp.SignatureOpts) error {
-	return nil
-}
-
-func (id *mockIdentity) VerifyAttributes(proof []byte, spec *msp.AttributeProofSpec) error {
-	return nil
 }
 
 func (id *mockIdentity) Serialize() ([]byte, error) {
@@ -93,10 +95,6 @@ func toSignedData(data [][]byte, identities [][]byte, signatures [][]byte) ([]*c
 type mockDeserializer struct {
 }
 
-func NewMockDeserializer() msp.IdentityDeserializer {
-	return &mockDeserializer{}
-}
-
 func (md *mockDeserializer) DeserializeIdentity(serializedIdentity []byte) (msp.Identity, error) {
 	return &mockIdentity{idBytes: serializedIdentity}, nil
 }
@@ -109,7 +107,7 @@ var moreMsgs = [][]byte{nil, nil, nil}
 func TestSimpleSignature(t *testing.T) {
 	policy := Envelope(SignedBy(0), signers)
 
-	spe, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	spe, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err != nil {
 		t.Fatalf("Could not create a new SignaturePolicyEvaluator using the given policy, crypto-helper: %s", err)
 	}
@@ -128,7 +126,7 @@ func TestSimpleSignature(t *testing.T) {
 func TestMultipleSignature(t *testing.T) {
 	policy := Envelope(And(SignedBy(0), SignedBy(1)), signers)
 
-	spe, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	spe, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err != nil {
 		t.Fatalf("Could not create a new SignaturePolicyEvaluator using the given policy, crypto-helper: %s", err)
 	}
@@ -147,7 +145,7 @@ func TestMultipleSignature(t *testing.T) {
 func TestComplexNestedSignature(t *testing.T) {
 	policy := Envelope(And(Or(And(SignedBy(0), SignedBy(1)), And(SignedBy(0), SignedBy(0))), SignedBy(0)), signers)
 
-	spe, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	spe, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err != nil {
 		t.Fatalf("Could not create a new SignaturePolicyEvaluator using the given policy, crypto-helper: %s", err)
 	}
@@ -171,12 +169,17 @@ func TestComplexNestedSignature(t *testing.T) {
 
 func TestNegatively(t *testing.T) {
 	rpolicy := Envelope(And(SignedBy(0), SignedBy(1)), signers)
-	rpolicy.Policy.Type = nil
+	rpolicy.Rule.Type = nil
 	b, _ := proto.Marshal(rpolicy)
 	policy := &cb.SignaturePolicyEnvelope{}
 	_ = proto.Unmarshal(b, policy)
-	_, err := compile(policy.Policy, policy.Identities, &mockDeserializer{})
+	_, err := compile(policy.Rule, policy.Identities, &mockDeserializer{})
 	if err == nil {
 		t.Fatal("Should have errored compiling because the Type field was nil")
 	}
+}
+
+func TestNilSignaturePolicyEnvelope(t *testing.T) {
+	_, err := compile(nil, nil, &mockDeserializer{})
+	assert.Error(t, err, "Fail to compile")
 }

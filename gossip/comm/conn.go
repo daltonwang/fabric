@@ -1,23 +1,12 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package comm
 
 import (
-	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -25,6 +14,8 @@ import (
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/op/go-logging"
+	"github.com/pkg/errors"
+	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
@@ -112,7 +103,7 @@ func (cs *connectionStore) getConnection(peer *RemotePeer) (*connection, error) 
 
 	// no one connected to us AND we failed connecting!
 	if err != nil {
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 
 	// at this point in the code, we created a connection to a remote peer
@@ -206,6 +197,7 @@ func newConnection(cl proto.GossipClient, c *grpc.ClientConn, cs proto.Gossip_Go
 }
 
 type connection struct {
+	cancel       context.CancelFunc
 	info         *proto.ConnectionInfo
 	outBuff      chan *msgSending
 	logger       *logging.Logger                 // logger
@@ -241,6 +233,10 @@ func (conn *connection) close() {
 		conn.conn.Close()
 	}
 
+	if conn.cancel != nil {
+		conn.cancel()
+	}
+
 	conn.Unlock()
 
 }
@@ -254,7 +250,9 @@ func (conn *connection) send(msg *proto.SignedGossipMessage, onErr func(error)) 
 	defer conn.Unlock()
 
 	if len(conn.outBuff) == util.GetIntOrDefault("peer.gossip.sendBuffSize", defSendBuffSize) {
-		go onErr(errSendOverflow)
+		if conn.logger.IsEnabledFor(logging.DEBUG) {
+			conn.logger.Debug("Buffer to", conn.info.Endpoint, "overflowed, dropping message", msg.String())
+		}
 		return
 	}
 
@@ -287,7 +285,7 @@ func (conn *connection) serviceConnection() error {
 			conn.stopChan <- stop
 			return nil
 		case err := <-errChan:
-			return err
+			return errors.WithStack(err)
 		case msg := <-msgChan:
 			conn.handler(msg)
 		}
@@ -306,10 +304,9 @@ func (conn *connection) writeToStream() {
 		case m := <-conn.outBuff:
 			err := stream.Send(m.envelope)
 			if err != nil {
-				go m.onErr(err)
+				go m.onErr(errors.WithStack(err))
 				return
 			}
-			break
 		case stop := <-conn.stopChan:
 			conn.logger.Debug("Closing writing to stream")
 			conn.stopChan <- stop
@@ -336,13 +333,13 @@ func (conn *connection) readFromStream(errChan chan error, msgChan chan *proto.S
 		}
 		if err != nil {
 			errChan <- err
-			conn.logger.Debug(conn.pkiID, "Got error, aborting:", err)
+			conn.logger.Debugf("%v Got error, aborting: %+v", conn.pkiID, errors.WithStack(err))
 			return
 		}
 		msg, err := envelope.ToGossipMessage()
 		if err != nil {
 			errChan <- err
-			conn.logger.Warning(conn.pkiID, "Got error, aborting:", err)
+			conn.logger.Warning("%v Got error, aborting: %+v", conn.pkiID, errors.WithStack(err))
 		}
 		msgChan <- msg
 	}
@@ -353,8 +350,8 @@ func (conn *connection) getStream() stream {
 	defer conn.Unlock()
 
 	if conn.clientStream != nil && conn.serverStream != nil {
-		e := "Both client and server stream are not nil, something went wrong"
-		conn.logger.Error(e)
+		e := errors.New("Both client and server stream are not nil, something went wrong")
+		conn.logger.Errorf("%+v", e)
 	}
 
 	if conn.clientStream != nil {

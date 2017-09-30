@@ -35,6 +35,12 @@ func invokeCmd(cf *ChaincodeCmdFactory) *cobra.Command {
 			return chaincodeInvoke(cmd, args, cf)
 		},
 	}
+	flagList := []string{
+		"name",
+		"ctor",
+		"channelID",
+	}
+	attachFlags(chaincodeInvokeCmd, flagList)
 
 	return chaincodeInvokeCmd
 }
@@ -42,7 +48,7 @@ func invokeCmd(cf *ChaincodeCmdFactory) *cobra.Command {
 func chaincodeInvoke(cmd *cobra.Command, args []string, cf *ChaincodeCmdFactory) error {
 	var err error
 	if cf == nil {
-		cf, err = InitCmdFactory(true)
+		cf, err = InitCmdFactory(true, true)
 		if err != nil {
 			return err
 		}

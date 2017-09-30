@@ -20,53 +20,10 @@ import (
 	"github.com/hyperledger/fabric/common/config"
 	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
 	"github.com/hyperledger/fabric/common/policies"
-	"github.com/hyperledger/fabric/msp"
 	cb "github.com/hyperledger/fabric/protos/common"
 
 	"github.com/golang/protobuf/proto"
 )
-
-type Resources struct {
-	// PolicyManagerVal is returned as the result of PolicyManager()
-	PolicyManagerVal *mockpolicies.Manager
-
-	// ChannelConfigVal is returned as the result of ChannelConfig()
-	ChannelConfigVal config.Channel
-
-	// OrdererConfigVal is returned as the result of OrdererConfig()
-	OrdererConfigVal config.Orderer
-
-	// ApplicationConfigVal is returned as the result of ApplicationConfig()
-	ApplicationConfigVal config.Application
-
-	// MSPManagerVal is returned as the result of MSPManager()
-	MSPManagerVal msp.MSPManager
-}
-
-// Returns the PolicyManagerVal
-func (r *Resources) PolicyManager() policies.Manager {
-	return r.PolicyManagerVal
-}
-
-// Returns the ChannelConfigVal
-func (r *Resources) ChannelConfig() config.Channel {
-	return r.ChannelConfigVal
-}
-
-// Returns the OrdererConfigVal
-func (r *Resources) OrdererConfig() config.Orderer {
-	return r.OrdererConfigVal
-}
-
-// Returns the ApplicationConfigVal
-func (r *Resources) ApplicationConfig() config.Application {
-	return r.ApplicationConfigVal
-}
-
-// Returns the MSPManagerVal
-func (r *Resources) MSPManager() msp.MSPManager {
-	return r.MSPManagerVal
-}
 
 // Transactional implements the configtxapi.Transactional
 type Transactional struct{}
@@ -82,13 +39,27 @@ func (t *Transactional) RollbackProposals(tx interface{}) {}
 
 // Initializer mocks the configtxapi.Initializer interface
 type Initializer struct {
-	Resources
-
 	// PolicyProposerVal is returned by PolicyProposers
 	PolicyProposerVal *PolicyProposer
 
 	// ValueProposerVal is returned by ValueProposers
 	ValueProposerVal *ValueProposer
+
+	// PolicyManagerVal is returned by PolicyManager
+	PolicyManagerVal *mockpolicies.Manager
+
+	// RootGroupKeyVal is returned by RootGroupKey
+	RootGroupKeyVal string
+}
+
+// RootGroupKeyreturns RootGroupKeyVal
+func (i *Initializer) RootGroupKey() string {
+	return i.RootGroupKeyVal
+}
+
+// PolicyManager returns PolicyManagerVal
+func (i *Initializer) PolicyManager() policies.Manager {
+	return i.PolicyManagerVal
 }
 
 // PolicyProposers returns PolicyProposerVal
@@ -172,11 +143,14 @@ type Manager struct {
 
 	// ProposeConfigUpdateVal is returns as the value for ProposeConfigUpdate
 	ProposeConfigUpdateVal *cb.ConfigEnvelope
+
+	// ConfigEnvelopeVal is returned as the value for ConfigEnvelope()
+	ConfigEnvelopeVal *cb.ConfigEnvelope
 }
 
-// ConfigEnvelope is currently unimplemented
+// ConfigEnvelope returns the ConfigEnvelopeVal
 func (cm *Manager) ConfigEnvelope() *cb.ConfigEnvelope {
-	panic("Unimplemented")
+	return cm.ConfigEnvelopeVal
 }
 
 // ConsensusType returns the ConsensusTypeVal

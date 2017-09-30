@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package gossip
@@ -61,6 +51,10 @@ type Gossip interface {
 	// JoinChan makes the Gossip instance join a channel
 	JoinChan(joinMsg api.JoinChannelMessage, chainID common.ChainID)
 
+	// SuspectPeers makes the gossip instance validate identities of suspected peers, and close
+	// any connections to peers with identities that are found invalid
+	SuspectPeers(s api.PeerSuspector)
+
 	// Stop stops the gossip component
 	Stop()
 }
@@ -73,8 +67,7 @@ type Config struct {
 	PropagateIterations int      // Number of times a message is pushed to remote peers
 	PropagatePeerNum    int      // Number of peers selected to push messages to
 
-	MaxBlockCountToStore       int           // Maximum count of blocks we store in memory
-	StateInfoRetentionInterval time.Duration // TODO: this would be a maximum time a stateInfo message is kept until expired
+	MaxBlockCountToStore int // Maximum count of blocks we store in memory
 
 	MaxPropagationBurstSize    int           // Max number of messages stored until it triggers a push to remote peers
 	MaxPropagationBurstLatency time.Duration // Max time between consecutive message pushes

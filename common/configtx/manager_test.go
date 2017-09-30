@@ -23,20 +23,19 @@ import (
 	"github.com/hyperledger/fabric/common/configtx/api"
 	mockconfigtx "github.com/hyperledger/fabric/common/mocks/configtx"
 	mockpolicies "github.com/hyperledger/fabric/common/mocks/policies"
+	"github.com/hyperledger/fabric/common/policies"
 	cb "github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/utils"
 
 	"github.com/stretchr/testify/assert"
 )
 
-var defaultChain = "DefaultChainID"
+var defaultChain = "default.chain.id"
 
 func defaultInitializer() *mockconfigtx.Initializer {
 	return &mockconfigtx.Initializer{
-		Resources: mockconfigtx.Resources{
-			PolicyManagerVal: &mockpolicies.Manager{
-				Policy: &mockpolicies.Policy{},
-			},
+		PolicyManagerVal: &mockpolicies.Manager{
+			Policy: &mockpolicies.Policy{},
 		},
 		PolicyProposerVal: &mockconfigtx.PolicyProposer{
 			Transactional: mockconfigtx.Transactional{},
@@ -44,6 +43,7 @@ func defaultInitializer() *mockconfigtx.Initializer {
 		ValueProposerVal: &mockconfigtx.ValueProposer{
 			Transactional: mockconfigtx.Transactional{},
 		},
+		RootGroupKeyVal: "foo",
 	}
 }
 
@@ -130,6 +130,23 @@ func TestCallback(t *testing.T) {
 	if calledBack != cm {
 		t.Fatalf("Should have called back with the correct manager")
 	}
+}
+
+func TestEmptyChannel(t *testing.T) {
+	_, err := NewManagerImpl(&cb.Envelope{
+		Payload: utils.MarshalOrPanic(&cb.Payload{
+			Header: &cb.Header{
+				ChannelHeader: utils.MarshalOrPanic(&cb.ChannelHeader{
+					Type:      int32(cb.HeaderType_CONFIG),
+					ChannelId: "foo",
+				}),
+			},
+			Data: utils.MarshalOrPanic(&cb.ConfigEnvelope{
+				Config: &cb.Config{},
+			}),
+		}),
+	}, defaultInitializer(), nil)
+	assert.Error(t, err)
 }
 
 // TestDifferentChainID tests that a config update for a different chain ID fails
@@ -331,7 +348,7 @@ func TestConfigChangeViolatesPolicy(t *testing.T) {
 		t.Fatalf("Error constructing config manager: %s", err)
 	}
 	// Set the mock policy to error
-	initializer.Resources.PolicyManagerVal.Policy.Err = fmt.Errorf("err")
+	initializer.PolicyManagerVal.Policy.Err = fmt.Errorf("err")
 
 	newConfig := makeConfigUpdateEnvelope(defaultChain, makeConfigSet(), makeConfigSet(makeConfigPair("foo", "foo", 1, []byte("foo"))))
 
@@ -354,8 +371,8 @@ func TestUnchangedConfigViolatesPolicy(t *testing.T) {
 	}
 
 	// Set the mock policy to error
-	initializer.Resources.PolicyManagerVal.PolicyMap = make(map[string]*mockpolicies.Policy)
-	initializer.Resources.PolicyManagerVal.PolicyMap["foo"] = &mockpolicies.Policy{Err: fmt.Errorf("err")}
+	initializer.PolicyManagerVal.PolicyMap = make(map[string]policies.Policy)
+	initializer.PolicyManagerVal.PolicyMap["foo"] = &mockpolicies.Policy{Err: fmt.Errorf("err")}
 
 	newConfig := makeConfigUpdateEnvelope(
 		defaultChain,

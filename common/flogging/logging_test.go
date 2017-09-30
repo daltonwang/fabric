@@ -32,7 +32,7 @@ type testCase struct {
 	args           []string
 	expectedLevels []string
 	modules        []string
-	withRegEx      bool
+	revert         bool
 	shouldErr      bool
 }
 
@@ -48,50 +48,54 @@ func TestSetModuleLevel(t *testing.T) {
 	tc = append(tc,
 		testCase{"Valid", []string{"a", "warning"}, []string{"WARNING"}, []string{"a"}, false, false},
 		// Same as before
-		testCase{"Invalid", []string{"a", "foo"}, []string{"WARNING"}, []string{"a"}, false, false},
+		testCase{"Invalid", []string{"a", "foo"}, []string{flogging.DefaultLevel()}, []string{"a"}, false, false},
+		// Test setting the "error" module
+		testCase{"Error", []string{"error", "warning"}, []string{"WARNING"}, []string{"error"}, false, false},
 		// Tests with regular expressions
 		testCase{"RegexModuleWithSubmodule", []string{"foo", "warning"}, []string{"WARNING", "WARNING", flogging.DefaultLevel()},
-			[]string{"foo", "foo/bar", "baz"}, true, false},
+			[]string{"foo", "foo/bar", "baz"}, false, false},
 		// Set the level for modules that contain "foo" or "baz"
 		testCase{"RegexOr", []string{"foo|baz", "debug"}, []string{"DEBUG", "DEBUG", "DEBUG", flogging.DefaultLevel()},
-			[]string{"foo", "foo/bar", "baz", "random"}, true, false},
+			[]string{"foo", "foo/bar", "baz", "random"}, false, false},
 		// Set the level for modules that end with "bar"
 		testCase{"RegexSuffix", []string{"bar$", "error"}, []string{"ERROR", flogging.DefaultLevel()},
-			[]string{"foo/bar", "bar/baz"}, true, false},
+			[]string{"foo/bar", "bar/baz"}, false, false},
 		testCase{"RegexComplex", []string{"^[a-z]+\\/[a-z]+#.+$", "warning"}, []string{flogging.DefaultLevel(), flogging.DefaultLevel(), "WARNING", "WARNING", "WARNING"},
-			[]string{"gossip/util", "orderer/util", "gossip/gossip#0.0.0.0:7051", "gossip/conn#-1", "orderer/conn#0.0.0.0:7051"}, true, false},
+			[]string{"gossip/util", "orderer/util", "gossip/gossip#0.0.0.0:7051", "gossip/conn#-1", "orderer/conn#0.0.0.0:7051"}, false, false},
 		testCase{"RegexInvalid", []string{"(", "warning"}, []string{flogging.DefaultLevel()},
-			[]string{"foo"}, true, true},
+			[]string{"foo"}, false, true},
+		testCase{"RevertLevels", []string{"revertmodule1", "warning", "revertmodule2", "debug"}, []string{"WARNING", "DEBUG", "DEBUG"},
+			[]string{"revertmodule1", "revertmodule2", "revertmodule2/submodule"}, true, false},
 	)
 
 	assert := assert.New(t)
 
 	for i := 0; i < len(tc); i++ {
 		t.Run(tc[i].name, func(t *testing.T) {
-			if tc[i].withRegEx {
-				for j := 0; j < len(tc[i].modules); j++ {
-					flogging.MustGetLogger(tc[i].modules[j])
+			for j := 0; j < len(tc[i].modules); j++ {
+				flogging.MustGetLogger(tc[i].modules[j])
+			}
+			if tc[i].revert {
+				flogging.SetPeerStartupModulesMap()
+			}
+			for k := 0; k < len(tc[i].args); k = k + 2 {
+				_, err := flogging.SetModuleLevel(tc[i].args[k], tc[i].args[k+1])
+				if tc[i].shouldErr {
+					assert.NotNil(err, "Should have returned an error")
 				}
-				flogging.IsSetLevelByRegExpEnabled = true // enable for call below
 			}
-
-			_, err := flogging.SetModuleLevel(tc[i].args[0], tc[i].args[1])
-			if tc[i].shouldErr {
-				assert.NotNil(err, "Should have returned an error")
+			for l := 0; l < len(tc[i].expectedLevels); l++ {
+				assert.Equal(tc[i].expectedLevels[l], flogging.GetModuleLevel(tc[i].modules[l]))
 			}
-			for k := 0; k < len(tc[i].expectedLevels); k++ {
-				assert.Equal(tc[i].expectedLevels[k], flogging.GetModuleLevel(tc[i].modules[k]))
+			if tc[i].revert {
+				flogging.RevertToPeerStartupLevels()
+				for m := 0; m < len(tc[i].modules); m++ {
+					assert.Equal(flogging.GetPeerStartupLevel(tc[i].modules[m]), flogging.GetModuleLevel(tc[i].modules[m]))
+				}
 			}
-
-			if tc[i].withRegEx {
-				// Force reset (a) in case the next test is non-regex, (b) so as
-				// to reset the modules map and reuse module names.
-				flogging.Reset()
-
-			}
+			flogging.Reset()
 		})
 	}
-
 }
 
 func TestInitFromSpec(t *testing.T) {
@@ -163,7 +167,7 @@ func ExampleInitBackend() {
 	formatSpec := "%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x} %{message}"
 	flogging.InitBackend(flogging.SetFormat(formatSpec), os.Stdout)
 
-	logger := logging.MustGetLogger("testModule")
+	logger := flogging.MustGetLogger("testModule")
 	logger.Info("test output")
 
 	// Output:

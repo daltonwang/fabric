@@ -1,32 +1,26 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package deliverclient
 
 import (
+	"crypto/sha256"
 	"errors"
+	"math"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hyperledger/fabric/core/comm"
 	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
 	"github.com/hyperledger/fabric/core/deliverservice/mocks"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/orderer"
+	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/stretchr/testify/assert"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
@@ -46,7 +40,7 @@ func newConnection() *grpc.ClientConn {
 type balancer struct {
 }
 
-func (*balancer) Start(target string) error {
+func (*balancer) Start(target string, config grpc.BalancerConfig) error {
 	return nil
 }
 
@@ -76,9 +70,6 @@ var blockDelivererConsumerWithRecv = func(bd blocksprovider.BlocksDeliverer) err
 
 var blockDelivererConsumerWithSend = func(bd blocksprovider.BlocksDeliverer) error {
 	return bd.Send(&common.Envelope{})
-}
-
-type atomicBroadcastBroadcastClient struct {
 }
 
 type abc struct {
@@ -152,8 +143,11 @@ func (cp *connProducer) UpdateEndpoints(endpoints []string) {
 	panic("Not implemented")
 }
 
+func (cp *connProducer) DisableEndpoint(endpoint string) {
+	panic("Not implemented")
+}
+
 func TestOrderingServiceConnFailure(t *testing.T) {
-	t.Parallel()
 	testOrderingServiceConnFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceConnFailure(t, blockDelivererConsumerWithSend)
 	assert.Equal(t, 0, connNumber)
@@ -406,13 +400,11 @@ func testLimitedConnAttempts(t *testing.T, bdc blocksDelivererConsumer) {
 }
 
 func TestLimitedTotalConnTimeRcv(t *testing.T) {
-	t.Parallel()
 	testLimitedTotalConnTime(t, blockDelivererConsumerWithRecv)
 	assert.Equal(t, 0, connNumber)
 }
 
 func TestLimitedTotalConnTimeSnd(t *testing.T) {
-	t.Parallel()
 	testLimitedTotalConnTime(t, blockDelivererConsumerWithSend)
 	assert.Equal(t, 0, connNumber)
 }
@@ -473,11 +465,10 @@ func testGreenPath(t *testing.T, bdc blocksDelivererConsumer) {
 }
 
 func TestCloseWhileRecv(t *testing.T) {
-	t.Parallel()
 	// Scenario: Recv is being called and after a while,
 	// the connection is closed.
 	// The Recv should return immediately in such a case
-	fakeOrderer := mocks.NewOrderer(5611)
+	fakeOrderer := mocks.NewOrderer(5611, t)
 	time.Sleep(time.Second)
 	defer fakeOrderer.Shutdown()
 	cp := &connProducer{ordererEndpoint: "localhost:5611"}
@@ -493,10 +484,14 @@ func TestCloseWhileRecv(t *testing.T) {
 	}
 	bc := NewBroadcastClient(cp, clFactory, setup, backoffStrategy)
 	var flag int32
-	time.AfterFunc(time.Second, func() {
+	go func() {
+		for fakeOrderer.ConnCount() == 0 {
+			time.Sleep(time.Second)
+		}
 		atomic.StoreInt32(&flag, int32(1))
 		bc.Close()
-	})
+		bc.Close() // Try to close a second time
+	}()
 	resp, err := bc.Recv()
 	// Ensure we returned because bc.Close() was called and not because some other reason
 	assert.Equal(t, int32(1), atomic.LoadInt32(&flag), "Recv returned before bc.Close() was called")
@@ -506,7 +501,6 @@ func TestCloseWhileRecv(t *testing.T) {
 }
 
 func TestCloseWhileSleep(t *testing.T) {
-	t.Parallel()
 	testCloseWhileSleep(t, blockDelivererConsumerWithRecv)
 	testCloseWhileSleep(t, blockDelivererConsumerWithSend)
 	assert.Equal(t, 0, connNumber)
@@ -543,9 +537,237 @@ func testCloseWhileSleep(t *testing.T, bdc blocksDelivererConsumer) {
 	go func() {
 		wg.Wait()
 		bc.Close()
+		bc.Close() // Try to close a second time
 	}()
 	err := bdc(bc)
 	assert.Error(t, err)
 	assert.Equal(t, 1, cp.connAttempts)
 	assert.Equal(t, 0, setupInvoked)
+}
+
+type signerMock struct {
+}
+
+func (s *signerMock) NewSignatureHeader() (*common.SignatureHeader, error) {
+	return &common.SignatureHeader{}, nil
+}
+
+func (s *signerMock) Sign(message []byte) ([]byte, error) {
+	hasher := sha256.New()
+	hasher.Write(message)
+	return hasher.Sum(nil), nil
+}
+
+func TestProductionUsage(t *testing.T) {
+	defer ensureNoGoroutineLeak(t)()
+	// This test configures the client in a similar fashion as will be
+	// in production, and tests against a live gRPC server.
+	os := mocks.NewOrderer(5612, t)
+	os.SetNextExpectedSeek(5)
+
+	connFact := func(endpoint string) (*grpc.ClientConn, error) {
+		return grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock())
+	}
+	prod := comm.NewConnectionProducer(connFact, []string{"localhost:5612"})
+	clFact := func(cc *grpc.ClientConn) orderer.AtomicBroadcastClient {
+		return orderer.NewAtomicBroadcastClient(cc)
+	}
+	onConnect := func(bd blocksprovider.BlocksDeliverer) error {
+		env, err := utils.CreateSignedEnvelope(common.HeaderType_CONFIG_UPDATE,
+			"TEST",
+			&signerMock{}, newTestSeekInfo(), 0, 0)
+		assert.NoError(t, err)
+		return bd.Send(env)
+	}
+	retryPol := func(attemptNum int, elapsedTime time.Duration) (time.Duration, bool) {
+		return time.Second * 3, attemptNum < 2
+	}
+	cl := NewBroadcastClient(prod, clFact, onConnect, retryPol)
+	go os.SendBlock(5)
+	resp, err := cl.Recv()
+	assert.NoError(t, err)
+	assert.NotNil(t, resp)
+	assert.Equal(t, uint64(5), resp.GetBlock().Header.Number)
+	os.Shutdown()
+	cl.Close()
+}
+
+func TestDisconnect(t *testing.T) {
+	// Scenario: spawn 2 ordering service instances
+	// and a client.
+	// Have the client try to Recv() from one of them,
+	// and disconnect the client until it tries connecting
+	// to the other instance.
+
+	defer ensureNoGoroutineLeak(t)()
+	os1 := mocks.NewOrderer(5613, t)
+	os1.SetNextExpectedSeek(5)
+	os2 := mocks.NewOrderer(5614, t)
+	os2.SetNextExpectedSeek(5)
+
+	defer os1.Shutdown()
+	defer os2.Shutdown()
+
+	waitForConnectionToSomeOSN := func() {
+		for {
+			if os1.ConnCount() > 0 || os2.ConnCount() > 0 {
+				return
+			}
+			time.Sleep(time.Millisecond * 100)
+		}
+	}
+
+	connFact := func(endpoint string) (*grpc.ClientConn, error) {
+		return grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock())
+	}
+	prod := comm.NewConnectionProducer(connFact, []string{"localhost:5613", "localhost:5614"})
+	clFact := func(cc *grpc.ClientConn) orderer.AtomicBroadcastClient {
+		return orderer.NewAtomicBroadcastClient(cc)
+	}
+	onConnect := func(bd blocksprovider.BlocksDeliverer) error {
+		return nil
+	}
+	retryPol := func(attemptNum int, elapsedTime time.Duration) (time.Duration, bool) {
+		return time.Millisecond * 10, attemptNum < 100
+	}
+
+	cl := NewBroadcastClient(prod, clFact, onConnect, retryPol)
+	stopChan := make(chan struct{})
+	go func() {
+		cl.Recv()
+		stopChan <- struct{}{}
+	}()
+	waitForConnectionToSomeOSN()
+	cl.Disconnect(false)
+
+	i := 0
+	os1Connected := false
+	os2Connected := false
+
+	for (!os1Connected || !os2Connected) && i < 100 {
+		if os1.ConnCount() > 0 {
+			os1Connected = true
+		}
+
+		if os2.ConnCount() > 0 {
+			os2Connected = true
+		}
+
+		t.Log("Attempt", i, "os1ConnCount()=", os1.ConnCount(), "os2ConnCount()=", os2.ConnCount())
+		i++
+		if i == 100 {
+			assert.Fail(t, "Didn't switch to other instance after many attempts")
+		}
+		cl.Disconnect(false)
+		time.Sleep(time.Millisecond * 500)
+	}
+	cl.Close()
+	select {
+	case <-stopChan:
+	case <-time.After(time.Second * 20):
+		assert.Fail(t, "Didn't stop within a timely manner")
+	}
+}
+
+func TestDisconnectAndDisableEndpoint(t *testing.T) {
+	// Scenario:
+	// Start one ordering service and one client
+	// Connect client to ordering service endpoint
+	// Check connection to ordering service
+	// Disconnect and disable endpoint
+	// Check that ordering service don't have connection to the client
+	// Try to reconnect to endpoint (orderer) and check that
+	// ordering service still don't have connection to the client
+	// Wait until endpoint disable expired and reconnect again
+	// Check that we have connection between orderer and client
+
+	defer ensureNoGoroutineLeak(t)()
+	os := mocks.NewOrderer(5613, t)
+	os.SetNextExpectedSeek(5)
+
+	defer os.Shutdown()
+
+	orgEndpointDisableInterval := comm.EndpointDisableInterval
+	comm.EndpointDisableInterval = time.Millisecond * 1500
+	defer func() { comm.EndpointDisableInterval = orgEndpointDisableInterval }()
+
+	connFact := func(endpoint string) (*grpc.ClientConn, error) {
+		return grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock())
+	}
+	prod := comm.NewConnectionProducer(connFact, []string{"localhost:5613"})
+	clFact := func(cc *grpc.ClientConn) orderer.AtomicBroadcastClient {
+		return orderer.NewAtomicBroadcastClient(cc)
+	}
+	onConnect := func(bd blocksprovider.BlocksDeliverer) error {
+		return nil
+	}
+
+	retryPol := func(attemptNum int, elapsedTime time.Duration) (time.Duration, bool) {
+		return time.Millisecond * 10, attemptNum < 10
+	}
+
+	cl := NewBroadcastClient(prod, clFact, onConnect, retryPol)
+
+	// First connect to orderer
+	go func() {
+		cl.Recv()
+	}()
+
+	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
+		return os.ConnCount() == 1
+	}), "Didn't get connection to orderer")
+
+	// Disconnect and disable endpoint
+	cl.Disconnect(true)
+
+	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
+		return os.ConnCount() == 0
+	}), "Didn't disconnect from orderer")
+
+	// Try to reconnect while endpoint still disabled
+	go func() {
+		assert.False(t, waitForWithTimeout(time.Millisecond*100, func() bool {
+			return os.ConnCount() == 1
+		}), "Recreated connection to orderer, although shouldn't")
+	}()
+
+	_, err := cl.Recv()
+	assert.Error(t, err, "Connection shouldn't have been established because all endpoints have been disabled")
+
+	//Wait until endpoint disable expires and reconnect again
+	time.Sleep(time.Millisecond * 1500)
+
+	go func() {
+		cl.Recv()
+	}()
+
+	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
+		return os.ConnCount() == 1
+	}), "Didn't got connection to orderer after endpoint disable expired")
+
+	cl.Close()
+}
+
+func waitForWithTimeout(timeout time.Duration, f func() bool) bool {
+
+	ctx, cancelation := context.WithTimeout(context.Background(), timeout)
+	defer cancelation()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(timeout / 10):
+			if f() {
+				return true
+			}
+		}
+	}
+}
+
+func newTestSeekInfo() *orderer.SeekInfo {
+	return &orderer.SeekInfo{Start: &orderer.SeekPosition{Type: &orderer.SeekPosition_Specified{Specified: &orderer.SeekSpecified{Number: 5}}},
+		Stop:     &orderer.SeekPosition{Type: &orderer.SeekPosition_Specified{Specified: &orderer.SeekSpecified{Number: math.MaxUint64}}},
+		Behavior: orderer.SeekInfo_BLOCK_UNTIL_READY,
+	}
 }

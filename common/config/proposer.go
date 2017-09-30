@@ -21,10 +21,10 @@ import (
 	"sync"
 
 	"github.com/golang/protobuf/proto"
-	logging "github.com/op/go-logging"
+	"github.com/hyperledger/fabric/common/flogging"
 )
 
-var logger = logging.MustGetLogger("common/config")
+var logger = flogging.MustGetLogger("common/config")
 
 // ValueDeserializer provides a mechanism to retrieve proto messages to deserialize config values into
 type ValueDeserializer interface {
@@ -37,7 +37,7 @@ type ValueDeserializer interface {
 	Deserialize(key string, value []byte) (proto.Message, error)
 }
 
-// Values defines a mechanism to supply messages to unamrshal from config
+// Values defines a mechanism to supply messages to unmarshal from config
 // and a mechanism to validate the results
 type Values interface {
 	ValueDeserializer

@@ -20,15 +20,15 @@ import (
 	"bytes"
 	"errors"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
-	logging "github.com/op/go-logging"
 	"github.com/syndtr/goleveldb/leveldb/iterator"
 )
 
-var logger = logging.MustGetLogger("stateleveldb")
+var logger = flogging.MustGetLogger("stateleveldb")
 
 var compositeKeySep = []byte{0x00}
 var lastKeyIndicator = byte(0x01)
@@ -79,6 +79,16 @@ func (vdb *versionedDB) Close() {
 	// do nothing because shared db is used
 }
 
+// ValidateKey implements method in VersionedDB interface
+func (vdb *versionedDB) ValidateKey(key string) error {
+	return nil
+}
+
+// BytesKeySuppoted implements method in VersionedDB interface
+func (vdb *versionedDB) BytesKeySuppoted() bool {
+	return true
+}
+
 // GetState implements method in VersionedDB interface
 func (vdb *versionedDB) GetState(namespace string, key string) (*statedb.VersionedValue, error) {
 	logger.Debugf("GetState(). ns=%s, key=%s", namespace, key)
@@ -92,6 +102,18 @@ func (vdb *versionedDB) GetState(namespace string, key string) (*statedb.Version
 	}
 	val, ver := statedb.DecodeValue(dbVal)
 	return &statedb.VersionedValue{Value: val, Version: ver}, nil
+}
+
+// GetVersion implements method in VersionedDB interface
+func (vdb *versionedDB) GetVersion(namespace string, key string) (*version.Height, error) {
+	versionedValue, err := vdb.GetState(namespace, key)
+	if err != nil {
+		return nil, err
+	}
+	if versionedValue == nil {
+		return nil, nil
+	}
+	return versionedValue.Version, nil
 }
 
 // GetStateMultipleKeys implements method in VersionedDB interface
@@ -133,7 +155,7 @@ func (vdb *versionedDB) ApplyUpdates(batch *statedb.UpdateBatch, height *version
 		updates := batch.GetUpdates(ns)
 		for k, vv := range updates {
 			compositeKey := constructCompositeKey(ns, k)
-			logger.Debugf("Channel [%s]: Applying key=[%#v]", vdb.dbName, compositeKey)
+			logger.Debugf("Channel [%s]: Applying key(string)=[%s] key(bytes)=[%#v]", vdb.dbName, string(compositeKey), compositeKey)
 
 			if vv.Value == nil {
 				dbBatch.Delete(compositeKey)

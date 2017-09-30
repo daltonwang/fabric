@@ -17,61 +17,33 @@ limitations under the License.
 package test
 
 import (
-	"os"
-	"path/filepath"
-
-	"github.com/hyperledger/fabric/common/config"
-	configtxmsp "github.com/hyperledger/fabric/common/config/msp"
+	"github.com/hyperledger/fabric/common/config/channel"
+	configtxmsp "github.com/hyperledger/fabric/common/config/channel/msp"
 	"github.com/hyperledger/fabric/common/configtx"
-	genesisconfig "github.com/hyperledger/fabric/common/configtx/tool/localconfig"
-	"github.com/hyperledger/fabric/common/configtx/tool/provisional"
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/genesis"
+	genesisconfig "github.com/hyperledger/fabric/common/tools/configtxgen/localconfig"
+	"github.com/hyperledger/fabric/common/tools/configtxgen/provisional"
+	cf "github.com/hyperledger/fabric/core/config"
 	"github.com/hyperledger/fabric/msp"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mspproto "github.com/hyperledger/fabric/protos/msp"
-
-	logging "github.com/op/go-logging"
 )
 
-var logger = logging.MustGetLogger("common/configtx/test")
+var logger = flogging.MustGetLogger("common/configtx/test")
 
 const (
 	// AcceptAllPolicyKey is the key of the AcceptAllPolicy.
 	AcceptAllPolicyKey = "AcceptAllPolicy"
 )
 
-var sampleMSPPath string
-
-func dirExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func init() {
-	mspSampleConfig := "/msp/sampleconfig"
-	peerPath := filepath.Join(os.Getenv("PEER_CFG_PATH"), mspSampleConfig)
-	ordererPath := filepath.Join(os.Getenv("ORDERER_CFG_PATH"), mspSampleConfig)
-	switch {
-	case dirExists(peerPath):
-		sampleMSPPath = peerPath
-		return
-	case dirExists(ordererPath):
-		sampleMSPPath = ordererPath
-		return
+func getConfigDir() string {
+	mspDir, err := cf.GetDevMspDir()
+	if err != nil {
+		logger.Panicf("Could not find genesis.yaml, try setting GOPATH correctly")
 	}
 
-	gopath := os.Getenv("GOPATH")
-	for _, p := range filepath.SplitList(gopath) {
-		samplePath := filepath.Join(p, "src/github.com/hyperledger/fabric", mspSampleConfig)
-		if !dirExists(samplePath) {
-			continue
-		}
-		sampleMSPPath = samplePath
-	}
-
-	if sampleMSPPath == "" {
-		logger.Panicf("Could not find genesis.yaml, try setting PEER_CFG_PATH, ORDERER_CFG_PATH, or GOPATH correctly")
-	}
+	return mspDir
 }
 
 // MakeGenesisBlock creates a genesis block using the test templates for the given chainID
@@ -100,7 +72,7 @@ const sampleOrgID = "DEFAULT"
 
 // ApplicationOrgTemplate returns the SAMPLE org with MSP template
 func ApplicationOrgTemplate() configtx.Template {
-	mspConf, err := msp.GetLocalMspConfig(sampleMSPPath, nil, sampleOrgID)
+	mspConf, err := msp.GetLocalMspConfig(getConfigDir(), nil, sampleOrgID)
 	if err != nil {
 		logger.Panicf("Could not load sample MSP config: %s", err)
 	}
@@ -109,7 +81,7 @@ func ApplicationOrgTemplate() configtx.Template {
 
 // OrdererOrgTemplate returns the SAMPLE org with MSP template
 func OrdererOrgTemplate() configtx.Template {
-	mspConf, err := msp.GetLocalMspConfig(sampleMSPPath, nil, sampleOrgID)
+	mspConf, err := msp.GetLocalMspConfig(getConfigDir(), nil, sampleOrgID)
 	if err != nil {
 		logger.Panicf("Could not load sample MSP config: %s", err)
 	}

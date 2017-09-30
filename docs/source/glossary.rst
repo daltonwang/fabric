@@ -3,10 +3,10 @@
 Glossary
 ===========================
 
-Terminology is important, so that all Fabric users and developers agree on what
-we mean by each specific term. What is chaincode, for example. So we'll point you
-there, whenever you want to reassure yourself. Of course, feel free to read the
-entire thing in one sitting if you like, it's pretty enlightening!
+Terminology is important, so that all Hyperledger Fabric users and developers
+agree on what we mean by each specific term. What is chaincode, for example.
+The documentation will reference the glossary as needed, but feel free to
+read the entire thing in one sitting if you like; it's pretty enlightening!
 
 .. _Anchor-Peer:
 
@@ -51,7 +51,7 @@ instructions (business logic) for modifying the assets.
 Channel
 -------
 
-A channel is a private blockchain overlay on a Fabric network, allowing for data
+A channel is a private blockchain overlay which allows for data
 isolation and confidentiality. A channel-specific ledger is shared across the
 peers in the channel, and transacting parties must be properly authenticated to
 a channel in order to interact with it.  Channels are defined by a
@@ -117,7 +117,7 @@ against current state data.
 Dynamic Membership
 ------------------
 
-Fabric supports the addition/removal of members, peers, and ordering service
+Hyperledger Fabric supports the addition/removal of members, peers, and ordering service
 nodes, without compromising the operationality of the overall network. Dynamic
 membership is critical when business relationships adjust and entities need to
 be added/removed for various reasons.
@@ -143,8 +143,18 @@ A policy could require that a transaction be endorsed by a minimum number of
 endorsing peers, a minimum percentage of endorsing peers, or by all endorsing
 peers that are assigned to a specific chaincode application. Policies can be
 curated based on the application and the desired level of resilience against
-misbehavior (deliberate or not) by the endorsing peers.  A distinct endorsement
-policy for deploy transactions, which install new chaincode, is also required.
+misbehavior (deliberate or not) by the endorsing peers. A distinct endorsement
+policy for install and instantiate transactions is also required.
+
+.. _Fabric-ca:
+
+Hyperledger Fabric CA
+---------------------
+
+Hyperledger Fabric CA is the default Certificate Authority component, which
+issues PKI-based certificates to network member organizations and their users.
+The CA issues one root certificate (rootCert) to each member and one enrollment
+certificate (ECert) to each authorized user.
 
 .. _Genesis-Block:
 
@@ -244,13 +254,6 @@ permissioned blockchain network. The membership services code that runs in peers
 and orderers both authenticates and authorizes blockchain operations.  It is a
 PKI-based implementation of the Membership Services Provider (MSP) abstraction.
 
-The ``fabric-ca`` component is an implementation of membership services to manage
-identities. In particular, it handles the issuance and revocation of enrollment
-certificates and transaction certificates.
-
-An enrollment certificate is a long-term identity credential; a transaction
-certificate is a short-term identity credential which is both anonymous and un-linkable.
-
 .. _Ordering-Service:
 
 Ordering Service
@@ -303,10 +306,9 @@ The Hyperledger Fabric client SDK provides a structured environment of libraries
 for developers to write and test chaincode applications. The SDK is fully
 configurable and extensible through a standard interface. Components, including
 cryptographic algorithms for signatures, logging frameworks and state stores,
-are easily swapped in and out of the SDK. The SDK API uses protocol buffers over
-gRPC for transaction processing, membership services, node traversal and event
-handling applications to communicate across the fabric. The SDK comes in
-multiple flavors - Node.js, Java. and Python.
+are easily swapped in and out of the SDK. The SDK provides APIs for transaction
+processing, membership services, node traversal and event handling. The SDK
+comes in multiple flavors: Node.js, Java. and Python.
 
 .. _State-DB:
 
@@ -340,3 +342,7 @@ Transaction
 
 An invoke or instantiate operation.  Invokes are requests to read/write data from
 the ledger.  Instantiate is a request to start a chaincode container on a peer.
+
+.. Licensed under Creative Commons Attribution 4.0 International License
+   https://creativecommons.org/licenses/by/4.0/
+

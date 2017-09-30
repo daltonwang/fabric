@@ -17,12 +17,14 @@ limitations under the License.
 package lockbasedtxmgr
 
 import (
+	"errors"
+
 	commonledger "github.com/hyperledger/fabric/common/ledger"
-	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
 	"github.com/hyperledger/fabric/core/ledger/ledgerconfig"
+	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 )
 
@@ -76,6 +78,7 @@ func (h *queryHelper) getStateRangeScanIterator(namespace string, startKey strin
 }
 
 func (h *queryHelper) executeQuery(namespace, query string) (commonledger.ResultsIterator, error) {
+	h.checkDone()
 	dbItr, err := h.txmgr.db.ExecuteQuery(namespace, query)
 	if err != nil {
 		return nil, err
@@ -83,28 +86,71 @@ func (h *queryHelper) executeQuery(namespace, query string) (commonledger.Result
 	return &queryResultsItr{DBItr: dbItr, RWSetBuilder: h.rwsetBuilder}, nil
 }
 
+func (h *queryHelper) getPrivateData(ns, coll, key string) ([]byte, error) {
+	h.checkDone()
+	versionedValue, err := h.txmgr.db.GetPrivateData(ns, coll, key)
+	if err != nil {
+		return nil, err
+	}
+	val, ver := decomposeVersionedValue(versionedValue)
+	if h.rwsetBuilder != nil {
+		h.rwsetBuilder.AddToHashedReadSet(ns, coll, key, ver)
+	}
+	return val, nil
+}
+
+func (h *queryHelper) getPrivateDataMultipleKeys(ns, coll string, keys []string) ([][]byte, error) {
+	h.checkDone()
+	versionedValues, err := h.txmgr.db.GetPrivateDataMultipleKeys(ns, coll, keys)
+	if err != nil {
+		return nil, nil
+	}
+	values := make([][]byte, len(versionedValues))
+	for i, versionedValue := range versionedValues {
+		val, ver := decomposeVersionedValue(versionedValue)
+		if h.rwsetBuilder != nil {
+			h.rwsetBuilder.AddToHashedReadSet(ns, coll, keys[i], ver)
+		}
+		values[i] = val
+	}
+	return values, nil
+}
+
+func (h *queryHelper) getPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (commonledger.ResultsIterator, error) {
+	// TODO
+	return nil, errors.New("Not Yet Supported")
+}
+
+func (h *queryHelper) executeQueryOnPrivateData(namespace, collection, query string) (commonledger.ResultsIterator, error) {
+	// TODO
+	return nil, errors.New("Not Yet Supported")
+}
+
 func (h *queryHelper) done() {
 	if h.doneInvoked {
 		return
 	}
-	defer h.txmgr.commitRWLock.RUnlock()
-	h.doneInvoked = true
+
+	defer func() {
+		h.txmgr.commitRWLock.RUnlock()
+		h.doneInvoked = true
+		for _, itr := range h.itrs {
+			itr.Close()
+		}
+	}()
+
 	for _, itr := range h.itrs {
-		itr.Close()
 		if h.rwsetBuilder != nil {
 			results, hash, err := itr.rangeQueryResultsHelper.Done()
+			if err != nil {
+				h.err = err
+				return
+			}
 			if results != nil {
 				itr.rangeQueryInfo.SetRawReads(results)
 			}
 			if hash != nil {
 				itr.rangeQueryInfo.SetMerkelSummary(hash)
-			}
-			// TODO Change the method signature of done() to return error. However, this will have
-			// repercurssions in the chaincode package, so deferring to a separate changeset.
-			// For now, capture the first error that is encountered
-			// during final processing and return the error when the caller retrieves the simulation results.
-			if h.err == nil {
-				h.err = err
 			}
 			h.rwsetBuilder.AddToRangeQuerySet(itr.ns, itr.rangeQueryInfo)
 		}
@@ -156,7 +202,7 @@ func newResultsItr(ns string, startKey string, endKey string,
 // Before returning the next result, update the EndKey and ItrExhausted in rangeQueryInfo
 // If we set the EndKey in the constructor (as we do for the StartKey) to what is
 // supplied in the original query, we may be capturing the unnecessary longer range if the
-// caller decides to stop iterating at some intermidiate point. Alternatively, we could have
+// caller decides to stop iterating at some intermediate point. Alternatively, we could have
 // set the EndKey and ItrExhausted in the Close() function but it may not be desirable to change
 // transactional behaviour based on whether the Close() was invoked or not
 func (itr *resultsItr) Next() (commonledger.QueryResult, error) {
@@ -169,7 +215,7 @@ func (itr *resultsItr) Next() (commonledger.QueryResult, error) {
 		return nil, nil
 	}
 	versionedKV := queryResult.(*statedb.VersionedKV)
-	return &ledger.KV{Key: versionedKV.Key, Value: versionedKV.Value}, nil
+	return &queryresult.KV{Namespace: versionedKV.Namespace, Key: versionedKV.Key, Value: versionedKV.Value}, nil
 }
 
 // updateRangeQueryInfo updates two attributes of the rangeQueryInfo
@@ -216,13 +262,13 @@ func (itr *queryResultsItr) Next() (commonledger.QueryResult, error) {
 	if queryResult == nil {
 		return nil, nil
 	}
-	versionedQueryRecord := queryResult.(*statedb.VersionedQueryRecord)
-	logger.Debugf("queryResultsItr.Next() returned a record:%s", string(versionedQueryRecord.Record))
+	versionedQueryRecord := queryResult.(*statedb.VersionedKV)
+	logger.Debugf("queryResultsItr.Next() returned a record:%s", string(versionedQueryRecord.Value))
 
 	if itr.RWSetBuilder != nil {
 		itr.RWSetBuilder.AddToReadSet(versionedQueryRecord.Namespace, versionedQueryRecord.Key, versionedQueryRecord.Version)
 	}
-	return &ledger.QueryRecord{Namespace: versionedQueryRecord.Namespace, Key: versionedQueryRecord.Key, Record: versionedQueryRecord.Record}, nil
+	return &queryresult.KV{Namespace: versionedQueryRecord.Namespace, Key: versionedQueryRecord.Key, Value: versionedQueryRecord.Value}, nil
 }
 
 // Close implements method in interface ledger.ResultsIterator

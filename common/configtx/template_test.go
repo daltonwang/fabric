@@ -20,10 +20,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/config"
 	cb "github.com/hyperledger/fabric/protos/common"
-	ab "github.com/hyperledger/fabric/protos/orderer"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -78,15 +75,23 @@ func TestCompositeTemplate(t *testing.T) {
 }
 
 func TestModPolicySettingTemplate(t *testing.T) {
+	existingModPolicy := "bar"
+
 	subGroup := "group"
+	subGroupExistingModPolicy := "otherGroup"
 	input := cb.NewConfigGroup()
 	input.Groups[subGroup] = cb.NewConfigGroup()
+	input.Groups[subGroupExistingModPolicy] = &cb.ConfigGroup{ModPolicy: existingModPolicy}
 
 	policyName := "policy"
 	valueName := "value"
+	policyExistingModPolicy := "otherPolicy"
+	valueExistingModPolicy := "otherValue"
 	for _, group := range []*cb.ConfigGroup{input, input.Groups[subGroup]} {
 		group.Values[valueName] = &cb.ConfigValue{}
 		group.Policies[policyName] = &cb.ConfigPolicy{}
+		group.Values[valueExistingModPolicy] = &cb.ConfigValue{ModPolicy: existingModPolicy}
+		group.Policies[policyExistingModPolicy] = &cb.ConfigPolicy{ModPolicy: existingModPolicy}
 	}
 
 	modPolicyName := "foo"
@@ -99,44 +104,12 @@ func TestModPolicySettingTemplate(t *testing.T) {
 	assert.Equal(t, modPolicyName, configUpdate.WriteSet.ModPolicy)
 	assert.Equal(t, modPolicyName, configUpdate.WriteSet.Values[valueName].ModPolicy)
 	assert.Equal(t, modPolicyName, configUpdate.WriteSet.Policies[policyName].ModPolicy)
+	assert.Equal(t, existingModPolicy, configUpdate.WriteSet.Values[valueExistingModPolicy].ModPolicy)
+	assert.Equal(t, existingModPolicy, configUpdate.WriteSet.Policies[policyExistingModPolicy].ModPolicy)
 	assert.Equal(t, modPolicyName, configUpdate.WriteSet.Groups[subGroup].ModPolicy)
 	assert.Equal(t, modPolicyName, configUpdate.WriteSet.Groups[subGroup].Values[valueName].ModPolicy)
 	assert.Equal(t, modPolicyName, configUpdate.WriteSet.Groups[subGroup].Policies[policyName].ModPolicy)
-}
-
-func TestNewChainTemplate(t *testing.T) {
-	simple := NewSimpleTemplate(
-		simpleGroup(0),
-		simpleGroup(1),
-	)
-
-	creationPolicy := "Test"
-	nct := NewChainCreationTemplate(creationPolicy, simple)
-
-	newChainID := "foo"
-	configEnv, err := nct.Envelope(newChainID)
-	if err != nil {
-		t.Fatalf("Error creation a chain creation config")
-	}
-
-	configNext, err := UnmarshalConfigUpdate(configEnv.ConfigUpdate)
-	if err != nil {
-		t.Fatalf("Should not have errored: %s", err)
-	}
-
-	assert.Equal(t, len(configNext.WriteSet.Values), 2, "Not the right number of config values")
-
-	for i := 0; i < 2; i++ {
-		_, ok := configNext.WriteSet.Values[fmt.Sprintf("%d", i)]
-		assert.True(t, ok, "Expected to find %d but did not", i)
-	}
-
-	configValue, ok := configNext.WriteSet.Groups[config.OrdererGroupKey].Values[CreationPolicyKey]
-	assert.True(t, ok, "Did not find creation policy")
-
-	creationPolicyMessage := new(ab.CreationPolicy)
-	if err := proto.Unmarshal(configValue.Value, creationPolicyMessage); err != nil {
-		t.Fatal("Should not have errored:", err)
-	}
-	assert.Equal(t, creationPolicy, creationPolicyMessage.Policy, "Policy names don't match")
+	assert.Equal(t, existingModPolicy, configUpdate.WriteSet.Groups[subGroup].Values[valueExistingModPolicy].ModPolicy)
+	assert.Equal(t, existingModPolicy, configUpdate.WriteSet.Groups[subGroup].Policies[policyExistingModPolicy].ModPolicy)
+	assert.Equal(t, existingModPolicy, configUpdate.WriteSet.Groups[subGroupExistingModPolicy].ModPolicy)
 }

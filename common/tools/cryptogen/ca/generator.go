@@ -23,6 +23,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"os"
 	"time"
 
@@ -40,82 +41,84 @@ type CA struct {
 
 // NewCA creates an instance of CA and saves the signing key pair in
 // baseDir/name
-func NewCA(baseDir, name string) (*CA, error) {
+func NewCA(baseDir, org, name string) (*CA, error) {
+
+	var response error
+	var ca *CA
 
 	err := os.MkdirAll(baseDir, 0755)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		priv, signer, err := csp.GeneratePrivateKey(baseDir)
+		response = err
+		if err == nil {
+			// get public signing certificate
+			ecPubKey, err := csp.GetECPublicKey(priv)
+			response = err
+			if err == nil {
+				template := x509Template()
+				//this is a CA
+				template.IsCA = true
+				template.KeyUsage |= x509.KeyUsageDigitalSignature |
+					x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign |
+					x509.KeyUsageCRLSign
+				template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
+
+				//set the organization for the subject
+				subject := subjectTemplate()
+				subject.Organization = []string{org}
+				subject.CommonName = name
+
+				template.Subject = subject
+				template.SubjectKeyId = priv.SKI()
+
+				x509Cert, err := genCertificateECDSA(baseDir, name, &template, &template,
+					ecPubKey, signer)
+				response = err
+				if err == nil {
+					ca = &CA{
+						Name:     name,
+						Signer:   signer,
+						SignCert: x509Cert,
+					}
+				}
+			}
+		}
 	}
-
-	//key, err := genKeyECDSA(caDir, name)
-	priv, signer, err := csp.GeneratePrivateKey(baseDir)
-	// get public signing certificate
-	ecPubKey, err := csp.GetECPublicKey(priv)
-	if err != nil {
-		return nil, err
-	}
-
-	template, err := x509Template()
-
-	if err != nil {
-		return nil, err
-	}
-
-	//this is a CA
-	template.IsCA = true
-	template.KeyUsage |= x509.KeyUsageCertSign | x509.KeyUsageCRLSign
-	template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny, x509.ExtKeyUsageServerAuth}
-
-	//set the organization for the subject
-	subject := subjectTemplate()
-	subject.Organization = []string{name}
-	subject.CommonName = name
-
-	template.Subject = subject
-	template.SubjectKeyId = priv.SKI()
-
-	x509Cert, err := genCertificateECDSA(baseDir, name, &template, &template,
-		ecPubKey, signer)
-
-	if err != nil {
-		return nil, err
-	}
-
-	ca := &CA{
-		Name:     name,
-		Signer:   signer,
-		SignCert: x509Cert,
-	}
-
-	return ca, nil
+	return ca, response
 }
 
 // SignCertificate creates a signed certificate based on a built-in template
 // and saves it in baseDir/name
-func (ca *CA) SignCertificate(baseDir, name string, pub *ecdsa.PublicKey) error {
+func (ca *CA) SignCertificate(baseDir, name string, sans []string, pub *ecdsa.PublicKey,
+	ku x509.KeyUsage, eku []x509.ExtKeyUsage) (*x509.Certificate, error) {
 
-	template, err := x509Template()
-
-	if err != nil {
-		return err
-	}
-
-	template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	template := x509Template()
+	template.KeyUsage = ku
+	template.ExtKeyUsage = eku
 
 	//set the organization for the subject
 	subject := subjectTemplate()
 	subject.CommonName = name
 
 	template.Subject = subject
+	for _, san := range sans {
+		// try to parse as an IP address first
+		ip := net.ParseIP(san)
+		if ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+		} else {
+			template.DNSNames = append(template.DNSNames, san)
+		}
+	}
 
-	_, err = genCertificateECDSA(baseDir, name, &template, ca.SignCert,
+	cert, err := genCertificateECDSA(baseDir, name, &template, ca.SignCert,
 		pub, ca.Signer)
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return cert, nil
 }
 
 // default template for X509 subject
@@ -128,14 +131,11 @@ func subjectTemplate() pkix.Name {
 }
 
 // default template for X509 certificates
-func x509Template() (x509.Certificate, error) {
+func x509Template() x509.Certificate {
 
 	//generate a serial number
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serialNumber, err := rand.Int(rand.Reader, serialNumberLimit)
-	if err != nil {
-		return x509.Certificate{}, err
-	}
+	serialNumber, _ := rand.Int(rand.Reader, serialNumberLimit)
 
 	now := time.Now()
 	//basic template to use
@@ -143,10 +143,9 @@ func x509Template() (x509.Certificate, error) {
 		SerialNumber:          serialNumber,
 		NotBefore:             now,
 		NotAfter:              now.Add(3650 * 24 * time.Hour), //~ten years
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
 	}
-	return x509, nil
+	return x509
 
 }
 
